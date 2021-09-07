@@ -14,10 +14,10 @@ import json
 import os
 
 
-fname_sample_submission = './dacon/_data/classifier01/sample_submission.csv'
+fname_sample_submission = './_data/classifier01/sample_submission.csv'
 
-train = pd.read_csv('./dacon/_data/classifier01/train.csv')
-test = pd.read_csv('./dacon/_data/classifier01/test.csv')
+train = pd.read_csv('./_data/classifier01/train.csv')
+test = pd.read_csv('./_data/classifier01/test.csv')
 sample_submission = pd.read_csv(fname_sample_submission)
 
 train=train[['과제명','label']]
@@ -99,4 +99,4 @@ results = model.predict(test_feature)
 
 sample_submission['label'] = results
 
-sample_submission.to_csv('./dacon/_data/classifier01/baseline.csv', index=False)
+sample_submission.to_csv('./_data/classifier01/baseline.csv', index=False)

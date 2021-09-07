@@ -3,11 +3,11 @@ ffpp = "pattern"
 
 #read csv
 import pandas as pd
-train = pd.read_csv('./dacon/_data/samsung01/train.csv')
-test = pd.read_csv('./dacon/_data/samsung01/test.csv')
+train = pd.read_csv('./_data/samsung01/train.csv')
+test = pd.read_csv('./_data/samsung01/test.csv')
 
-ss = pd.read_csv('./dacon/_data/samsung01/sample_submission.csv')
-dev = pd.read_csv('./dacon/_data/samsung01/dev.csv')
+ss = pd.read_csv('./_data/samsung01/sample_submission.csv')
+dev = pd.read_csv('./_data/samsung01/dev.csv')
 
 train = pd.concat([train,dev])
 
@@ -137,4 +137,4 @@ model.fit(X, Y, epochs = 20)
 test_y = model.predict(np_test_fps_array)
 ss['ST1_GAP(eV)'] = test_y
 
-ss.to_csv("./dacon/_data/_save/csv_samsung01/pattern_mlp.csv",index=False)
+ss.to_csv("./_data/_save/csv_samsung01/pattern_mlp.csv",index=False)

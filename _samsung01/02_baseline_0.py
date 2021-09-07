@@ -17,8 +17,8 @@ from torch.utils.data import Dataset, DataLoader
 
 
 
-train = pd.read_csv('./dacon/_data/samsung01/train.csv')
-test = pd.read_csv('./dacon/_data/samsung01/test.csv')
+train = pd.read_csv('./_data/samsung01/train.csv')
+test = pd.read_csv('./_data/samsung01/test.csv')
 
 # 데이터 전처리
 
@@ -28,9 +28,9 @@ for idx, row in tqdm(train.iterrows()):
         m = Chem.MolFromSmiles(smiles)
         if m != None:
                 img = Draw.MolToImage(m, size=(300,300))
-                img.save(f'./dacon/_data/samsung01/train_imgs/{file}.png')
+                img.save(f'./_data/samsung01/train_imgs/{file}.png')
 
-sample_img = cv2.imread('./dacon/_data/samsung01/train_imgs/dev_0.png')
+sample_img = cv2.imread('./_data/samsung01/train_imgs/dev_0.png')
 plt.imshow(sample_img)
 plt.show()
 
@@ -44,7 +44,7 @@ dropout_rate = 0.1
 embedding_dim = 128
 learning_rate = 1e-4
 vision_pretrain = True
-save_path = f'./dacon/_data/_save/csv_samsung01/best_model.pt'
+save_path = f'./_data/_save/csv_samsung01/best_model.pt'
 
 # SMILES Tokenizing
 

@@ -1,113 +1,286 @@
-# 데이터부터 가져옵시다.
-
+from PIL.Image import init
 import numpy as np
 import pandas as pd
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Embedding, LSTM, Dropout
-from tensorflow.python.keras.layers import embeddings
-from sklearn.model_selection import train_test_split
+import cv2
+import rdkit            # conda install -c conda-forge rdkit deepchem==2.3.0
+from rdkit import Chem  # from rdkit.Chem import Draw
+from rdkit import RDLogger
+from rdkit.Chem import Draw
+RDLogger.DisableLog('rdApp.*')
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
-file_path = './dacon/_data/samsung01/'
+import torch
+from torch import nn
+from torchvision import models
+from torch.utils.data import Dataset, DataLoader
 
-# 분자구조
 
-def model_s1(x_train, s1_train, x_test, s1_test, x_predict):
+
+train = pd.read_csv('./_data/samsung01/train.csv')
+test = pd.read_csv('./_data/samsung01/test.csv')
+
+# 데이터 전처리
+
+for idx, row in tqdm(train.iterrows()):
+        file = row['uid']
+        smiles = row['SMILES']
+        m = Chem.MolFromSmiles(smiles)
+        if m != None:
+                img = Draw.MolToImage(m, size=(300,300))
+                img.save(f'./_data/samsung01/train_imgs/{file}.png')
+
+sample_img = cv2.imread('./_data/samsung01/train_imgs/dev_0.png')
+plt.imshow(sample_img)
+plt.show()
+
+# 하이퍼 파라미터
+
+device = torch.device("cuda:0")
+BATCH_SIZE = 64
+EPOCHS = 25
+num_layers = 1
+dropout_rate = 0.1
+embedding_dim = 128
+learning_rate = 1e-4
+vision_pretrain = True
+save_path = f'./_data/_save/csv_samsung01/best_model.pt'
+
+# SMILES Tokenizing
+
+class SMILES_Tokenizer():
+    def __init__(self, max_length):
+        self.txt2idx = {}
+        self.idx2txt = {}
+        self.max_length = max_length
+    
+    def fit(self, SMILES_list):
+        unique_char = set()
+        for smiles in SMILES_list:
+            for char in smiles:
+                unique_char.add(char)
+        unique_char = sorted(list(unique_char))
+        for i, char in enumerate(unique_char):
+            self.txt2idx[char]=i+2
+            self.idx2txt[i+2]=char
+            
+    def txt2seq(self, texts):
+        seqs = []
+        for text in tqdm(texts):
+            seq = [0]*self.max_length
+            for i, t in enumerate(text):
+                if i == self.max_length:
+                    break
+                try:
+                    seq[i] = self.txt2idx[t]
+                except:
+                    seq[i] = 1
+            seqs.append(seq)
+        return np.array(seqs)
+
+max_len = train.SMILES.str.len().max()
+
+tokenizer = SMILES_Tokenizer(max_len)
+tokenizer.fit(train.SMILES)     
         
-        model = Sequential()
-        model.add(Embedding(input_dim=12449, output_dim=64, input_length=15))
-        model.add(LSTM(32))
-        model.add(Dropout(0.5))
-        model.add(Dense(1))
+seqs = tokenizer.txt2seq(train.SMILES)
+labels = train[['S1_energy(eV)', 'T1_energy(eV)']].to_numpy()
+imgs = ('./dacon/_data/samsung01/train_imgs/'+train.uid+'.png').to_numpy()
 
-        # model.summary()
+from sklearn.utils import shuffle
+imgs, seqs, labels = shuffle(imgs, seqs, labels, random_state=42)
 
-        model.compile(loss='mse', optimizer='adam', metrics=['mae'])
-        model.fit(x_train, s1_train, epochs=10, batch_size=2, validation_split=0.2, verbose=1)
+train_imgs = imgs[:27000]
+train_seqs = seqs[:27000]
+train_labels = labels[:27000]
+val_imgs = imgs[27000:]
+val_seqs = seqs[27000:]
+val_labels = labels[27000:]
 
-        loss, mae = model.evaluate(x_test, s1_test)
-        output = model.predict(x_predict)
+class CustomDataset(Dataset):
+    def __init__(self, imgs, seqs, labels=None, mode='train'):
+        self.mode = mode
+        self.imgs = imgs
+        self.seqs = seqs
+        if self.mode=='train':
+            self.labels = labels
+            
+    def __len__(self):
+        return len(self.imgs)
+    
+    def __getitem__(self, i):
+        img = cv2.imread(self.imgs[i]).astype(np.float32)/255
+        img = np.transpose(img, (2,0,1))
+        if self.mode == 'train':
+            return {
+                'img' : torch.tensor(img, dtype=torch.float32),
+                'seq' : torch.tensor(self.seqs[i], dtype=torch.long),
+                'label' : torch.tensor(self.labels[i], dtype=torch.float32)
+            }
+        else:
+            return {
+                'img' : torch.tensor(img, dtype=torch.float32),
+                'seq' : torch.tensor(self.seqs[i], dtype=torch.long),
+            }
 
-        print("loss :", loss)
-        print("mae :", mae)
+train_dataset = CustomDataset(train_imgs, train_seqs, train_labels)
+val_dataset = CustomDataset(val_imgs, val_seqs, val_labels)
+
+train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE, num_workers=16, shuffle=True)
+val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=16, shuffle=True)
+
+sample_batch = next(iter(train_dataloader))
+
+sample_batch['img'].size(), sample_batch['seq'].size(), sample_batch['label'].size()
+
+sample_batch['img'].dtype, sample_batch['seq'].dtype, sample_batch['label'].dtype
+
+class CNN_Encoder(nn.Module):
+    def __init__(self, embedding_dim, rate):
+        super(CNN_Encoder, self).__init__()
+        model = models.resnet50(pretrained=vision_pretrain)
+        modules = list(model.children())[:-2]
+        self.feature_extract_model = nn.Sequential(*modules)
+        self.dropout1 = nn.Dropout(rate)
+        self.fc = nn.Linear(2048, embedding_dim)
+        self.dropout2 = nn.Dropout(rate)
+        
+    def forward(self, x):
+        x = self.feature_extract_model(x)
+        x = x.permute(0,2,3,1)
+        x = x.view(x.size(0), -1, x.size(3))
+        x = self.dropout1(x)
+        x = nn.ReLU()(self.fc(x))
+        x = self.dropout2(x)
+        return x
+
+class RNN_Decoder(nn.Module):
+    def __init__(self, max_len, embedding_dim, num_layers, rate):
+        super(RNN_Decoder, self).__init__()
+        self.embedding = nn.Embedding(max_len, embedding_dim)
+        self.dropout = nn.Dropout(rate)
+        self.lstm = nn.LSTM(embedding_dim, embedding_dim, num_layers)
+        self.final_layer = nn.Linear((max_len+100)*embedding_dim, 2)
+
+    def forward(self, enc_out, dec_inp):
+        embedded = self.embedding(dec_inp)
+        embedded = self.dropout(embedded)
+        embedded = torch.cat([enc_out, embedded], dim=1)
+        hidden, _ = self.lstm(embedded)
+        hidden = hidden.view(hidden.size(0), -1)
+        output = nn.ReLU()(self.final_layer(hidden))
         return output
 
-
-def model_t1(x_train, t1_train, x_test, t1_test, x_predict):
+class CNN2RNN(nn.Module):
+    def __init__(self, embedding_dim, max_len, num_layers, rate):
+        super(CNN2RNN, self).__init__()
+        self.cnn = CNN_Encoder(embedding_dim, rate)
+        self.rnn = RNN_Decoder(max_len, embedding_dim, num_layers, rate)
         
-        model = Sequential()
-        model.add(Embedding(input_dim=12449, output_dim=64, input_length=15))
-        model.add(LSTM(32))
-        model.add(Dropout(0.5))
-        model.add(Dense(1))
-
-        # model.summary()
-
-        model.compile(loss='mse', optimizer='adam', metrics=['mae'])
-        model.fit(x_train, t1_train, epochs=10, batch_size=2, validation_split=0.2, verbose=1)
-
-        loss, mae = model.evaluate(x_test, t1_test)
-        output = model.predict(x_predict)
-
-        print("loss :", loss)
-        print("mae :", mae)
+    def forward(self, img, seq):
+        cnn_output = self.cnn(img)
+        output = self.rnn(cnn_output, seq)
+        
         return output
 
+model = CNN2RNN(embedding_dim=embedding_dim, max_len=max_len, num_layers=num_layers, rate=dropout_rate)
+model = model.to(device)
 
-def train():
-        train = pd.read_csv(file_path+'train.csv')
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+criterion = nn.L1Loss()
 
-        x = train.loc[:,['SMILES']]
-        y_s1 = train.loc[:,['S1_energy(eV)']].values             
-        y_t1 = train.loc[:,['T1_energy(eV)']].values         
+def train_step(batch_item, epoch, batch, training):
+    img = batch_item['img'].to(device)
+    seq = batch_item['seq'].to(device)
+    label = batch_item['label'].to(device)
+    if training is True:
+        model.train()
+        optimizer.zero_grad()
+        with torch.cuda.amp.autocast():
+            output = model(img, seq)
+            loss = criterion(output, label)
+        loss.backward()
+        optimizer.step()
         
-        # print(x.shape)          # (30274, 1)
-        token = Tokenizer()
-        token.fit_on_texts(x['SMILES'])
-        # print(token.word_index)
+        return loss
+    else:
+        model.eval()
+        with torch.no_grad():
+            output = model(img, seq)
+            loss = criterion(output, label)
+            
+        return loss
 
-        x = token.texts_to_sequences(x['SMILES'])
+loss_plot, val_loss_plot = [], []
 
-        # word_size = len(token.word_index)
-        # print(word_size)        # 12449
+for epoch in range(EPOCHS):
+    total_loss, total_val_loss = 0, 0
+    
+    tqdm_dataset = tqdm(enumerate(train_dataloader))
+    training = True
+    for batch, batch_item in tqdm_dataset:
+        batch_loss = train_step(batch_item, epoch, batch, training)
+        total_loss += batch_loss
+        
+        tqdm_dataset.set_postfix({
+            'Epoch': epoch + 1,
+            'Loss': '{:06f}'.format(batch_loss.item()),
+            'Total Loss' : '{:06f}'.format(total_loss/(batch+1))
+        })
+    loss_plot.append(total_loss/(batch+1))
+    
+    tqdm_dataset = tqdm(enumerate(val_dataloader))
+    training = False
+    for batch, batch_item in tqdm_dataset:
+        batch_loss = train_step(batch_item, epoch, batch, training)
+        total_val_loss += batch_loss
+        
+        tqdm_dataset.set_postfix({
+            'Epoch': epoch + 1,
+            'Val Loss': '{:06f}'.format(batch_loss.item()),
+            'Total Val Loss' : '{:06f}'.format(total_val_loss/(batch+1))
+        })
+    val_loss_plot.append(total_val_loss/(batch+1))
+    
+    if np.min(val_loss_plot) == val_loss_plot[-1]:
+        torch.save(model, save_path)
 
-        x = pad_sequences(x, padding='pre', maxlen=15) # or post
-        # print(x.shape)            # (30274, 15)
+model = torch.load(save_path)
 
-        return {"y_s1": y_s1, "y_t1": y_t1, "x": x}
+test = pd.read_csv('./data/test.csv')
+submission = pd.read_csv('./data/sample_submission.csv')
 
-def test():
-        test = pd.read_csv(file_path+'test.csv')
-        test_data = test.loc[:,'SMILES'].values
+for idx, row in tqdm(test.iterrows()):
+    file = row['uid']
+    smiles = row['SMILES']
+    m = Chem.MolFromSmiles(smiles)
+    if m != None:
+        img = Draw.MolToImage(m, size=(300,300))
+        img.save(f'./data/test_imgs/{file}.png')
 
-        return {"x_test": test_data}        
+test_seqs = tokenizer.txt2seq(test.SMILES)
+test_imgs = ('./data/test_imgs/'+test.uid+'.png').to_numpy()
 
-def train_test_splits(x_data, s1_data, t1_data):
-        x_train, x_test, s1_train, s1_test, t1_train, t1_test = train_test_split(x_data, s1_data, t1_data,
-                                train_size=0.8, shuffle=True, random_state=66)
-        return {"x_train": x_train, "s1_train": s1_train, "t1_train": t1_train,
-                "x_test": x_test, "s1_test": s1_test, "t1_test": t1_test}
+test_dataset = CustomDataset(imgs=test_imgs, seqs=test_seqs, labels=None, mode='test')
+test_dataloader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE, num_workers=16)
 
+def predict(dataset):
+    model.eval()
+    result = []
+    for batch_item in dataset:
+        img = batch_item['img'].to(device)
+        seq = batch_item['seq'].to(device)
+        with torch.no_grad():
+            output = model(img, seq)
+        output = output.cpu().numpy()
+        gap = output[:, 0] - output[:, 1]
+        gap = np.where(gap<0, 0, gap)
+        result.extend(list(gap))
+        
+    return result
 
-train_data = train()
-s1_data = train_data['y_s1']
-t1_data = train_data['y_t1']
-x_data = train_data['x']
+pred = predict(test_dataloader)
 
-test = test()
-x_predict = test['x_test']
+submission['ST1_GAP(eV)'] = pred
 
-tts = train_test_splits(x_data, s1_data, t1_data)
-x_train = tts['x_train']
-s1_train = tts['s1_train']
-t1_train = tts['t1_train']
-x_test = tts['x_test']
-s1_test = tts['s1_test']
-t1_test  = tts['t1_test']
-
-s1_output = model_s1(x_train, s1_train, x_test, s1_test, x_predict)
-t1_output = model_s1(x_train, t1_train, x_test, t1_test, x_predict)
-
-st1_gap = s1_output - t1_output
+submission.to_csv('dacon_baseline.csv', index=False)
