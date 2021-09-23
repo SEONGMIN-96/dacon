@@ -3,11 +3,11 @@ ffpp = "pattern"
 
 #read csv
 import pandas as pd
-train = pd.read_csv('./dacon/_data/samsung01/train.csv')
-test = pd.read_csv('./dacon/_data/samsung01/test.csv')
+train = pd.read_csv('./_data/samsung01/train.csv')
+test = pd.read_csv('./_data/samsung01/test.csv')
 
-ss = pd.read_csv('./dacon/_data/samsung01/sample_submission.csv')
-dev = pd.read_csv('./dacon/_data/samsung01/dev.csv')
+ss = pd.read_csv('./_data/samsung01/sample_submission.csv')
+dev = pd.read_csv('./_data/samsung01/dev.csv')
 
 train = pd.concat([train,dev])
 
